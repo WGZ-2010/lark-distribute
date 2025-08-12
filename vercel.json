@@ -1,0 +1,17 @@
+{
+  "functions": {
+    "api/distribute.py": {
+      "runtime": "@vercel/python"
+    }
+  },
+  "routes": [
+    {
+      "src": "/api/distribute",
+      "dest": "/api/distribute.py"
+    },
+    {
+      "src": "/",
+      "dest": "/api/distribute.py"
+    }
+  ]
+}
