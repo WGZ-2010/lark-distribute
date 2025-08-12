@@ -32,10 +32,11 @@ def get_tenant_access_token():
     payload = {"app_id": APP_ID, "app_secret": APP_SECRET}
     
     try:
-        print(f"📡 发送令牌请求...")
+        print(f"📡 发送令牌请求到: {url}")
         r = requests.post(url, json=payload, timeout=10)
+        print(f"📥 令牌请求状态码: {r.status_code}")
         data = r.json()
-        print(f"📥 令牌响应代码: {data.get('code', 'unknown')}")
+        print(f"📥 令牌响应: {data}")
         
         if data.get("code") != 0:
             error_msg = f"获取令牌失败: {data}"
@@ -60,7 +61,7 @@ def extract_token_from_url(url: str) -> str:
         path = url.split("?", 1)[0]
         segs = [s for s in path.split("/") if s]
         token = segs[-1] if segs else ""
-        print(f"🔗 从URL提取token: {token}")
+        print(f"🔗 从URL提取token: {url} -> {token}")
         return token
     except Exception as e:
         print(f"❌ 提取token失败: {e}")
@@ -75,13 +76,56 @@ def copy_file(file_token: str, folder_token: str, token: str):
     headers = {"Authorization": f"Bearer {token}"}
     url = f"{LARK_BASE}/open-apis/drive/v1/files/copy"
     
-    print(f"📋 准备复制文件，参数: {payload}")
+    print(f"📋 准备复制文件")
+    print(f"📋 请求URL: {url}")
+    print(f"📋 请求头: {headers}")
+    print(f"📋 请求参数: {payload}")
     
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=20)
-        response_data = r.json()
-        print(f"📥 复制API响应: {response_data}")
-        return response_data
+        print(f"📥 复制请求状态码: {r.status_code}")
+        print(f"📥 复制响应头: {dict(r.headers)}")
+        print(f"📥 复制响应原始文本 (前500字符): {r.text[:500]}")
+        print(f"📥 复制响应原始文本 (完整): {repr(r.text)}")
+        
+        # 检查状态码
+        if r.status_code != 200:
+            print(f"❌ HTTP状态码错误: {r.status_code}")
+            raise RuntimeError(f"HTTP请求失败，状态码: {r.status_code}, 响应: {r.text}")
+        
+        # 检查是否为空响应
+        if not r.text.strip():
+            print(f"❌ 空响应")
+            raise RuntimeError("API返回空响应")
+        
+        # 尝试解析JSON
+        try:
+            response_data = r.json()
+            print(f"📥 复制响应解析后: {response_data}")
+            return response_data
+        except json.JSONDecodeError as e:
+            print(f"❌ JSON解析失败: {e}")
+            print(f"❌ 响应内容类型: {r.headers.get('content-type', '未知')}")
+            print(f"❌ 响应长度: {len(r.text)}")
+            
+            # 尝试清理响应内容
+            cleaned_text = r.text.strip()
+            if cleaned_text.startswith('(') and cleaned_text.endswith(')'):
+                # 可能是JSONP格式，去掉括号
+                cleaned_text = cleaned_text[1:-1]
+                print(f"📥 尝试清理后的响应: {cleaned_text}")
+                try:
+                    response_data = json.loads(cleaned_text)
+                    print(f"📥 清理后解析成功: {response_data}")
+                    return response_data
+                except json.JSONDecodeError:
+                    pass
+            
+            raise RuntimeError(f"API响应不是有效JSON: {repr(r.text)}")
+            
+    except requests.RequestException as e:
+        print(f"❌ 请求失败: {e}")
+        raise RuntimeError(f"网络请求失败: {str(e)}")
     except Exception as e:
         print(f"❌ 复制文件失败: {e}")
         raise RuntimeError(f"复制文件失败: {str(e)}")
@@ -101,18 +145,13 @@ class Handler(BaseHTTPRequestHandler):
         response_data = {
             "status": "✅ 飞书文档分发API运行正常！",
             "message": "使用POST方法发送分发请求",
-            "version": "v1.0",
+            "version": "v1.2-full-debug",
             "timestamp": int(time.time()),
             "config_status": {
                 "APP_ID": "✅ 已配置" if APP_ID else "❌ 未配置",
                 "APP_SECRET": "✅ 已配置" if APP_SECRET else "❌ 未配置",
                 "TENANT_DOMAIN": TENANT_DOMAIN if TENANT_DOMAIN else "❌ 未配置",
                 "DEFAULT_FOLDER_TOKEN": "✅ 已配置" if DEFAULT_FOLDER_TOKEN else "⚠️ 未配置"
-            },
-            "usage": {
-                "endpoint": "POST /api/distribute",
-                "required_fields": ["record_id", "template_doc_url"],
-                "optional_fields": ["target_folder_url"]
             }
         }
         
@@ -124,12 +163,6 @@ class Handler(BaseHTTPRequestHandler):
         print(f"\n" + "="*50)
         print("🚀 收到文档分发请求！")
         print("="*50)
-        
-        # 设置响应头
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.end_headers()
         
         try:
             # 读取请求体
@@ -146,6 +179,10 @@ class Handler(BaseHTTPRequestHandler):
                         "error": "请求数据格式错误",
                         "details": str(e)
                     }
+                    self.send_response(400)
+                    self.send_header('Content-Type', 'application/json; charset=utf-8')
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.end_headers()
                     self.wfile.write(json.dumps(error_response, ensure_ascii=False, indent=2).encode('utf-8'))
                     return
             else:
@@ -181,6 +218,10 @@ class Handler(BaseHTTPRequestHandler):
                     "details": error_msg,
                     "record_id": record_id
                 }
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
                 self.wfile.write(json.dumps(error_response, ensure_ascii=False, indent=2).encode('utf-8'))
                 return
 
@@ -228,6 +269,10 @@ class Handler(BaseHTTPRequestHandler):
                 print(f"🔗 新文档URL: {new_url}")
                 print("="*50 + "\n")
                 
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
                 self.wfile.write(json.dumps(result, ensure_ascii=False, indent=2).encode('utf-8'))
                 
             except Exception as e:
@@ -243,6 +288,10 @@ class Handler(BaseHTTPRequestHandler):
                     "timestamp": int(time.time())
                 }
                 
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
                 self.wfile.write(json.dumps(error_response, ensure_ascii=False, indent=2).encode('utf-8'))
         
         except Exception as e:
@@ -253,6 +302,10 @@ class Handler(BaseHTTPRequestHandler):
                 "details": str(e),
                 "timestamp": int(time.time())
             }
+            self.send_response(500)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
             self.wfile.write(json.dumps(error_response, ensure_ascii=False, indent=2).encode('utf-8'))
     
     def do_OPTIONS(self):
