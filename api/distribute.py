@@ -1,8 +1,6 @@
 import os, time
 import requests
-from http.server import BaseHTTPRequestHandler
 import json
-import urllib.parse
 
 # 从环境变量获取配置
 APP_ID = os.getenv("APP_ID", "")
@@ -95,6 +93,7 @@ def health_check():
         "status": "API运行正常！",
         "message": "飞书文档分发API已启动",
         "version": "v1.0",
+        "timestamp": int(time.time()),
         "endpoints": {
             "health": "GET /api/distribute",
             "distribute": "POST /api/distribute"
@@ -192,79 +191,109 @@ def handle_distribute(request_data):
         print("="*50 + "\n")
         raise RuntimeError(error_msg)
 
-# Vercel 处理函数 - 这是关键！
-class handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        print(f"📥 GET 请求: {self.path}")
-        
-        # 健康检查
-        response_data = health_check()
-        
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.end_headers()
-        
-        response_json = json.dumps(response_data, ensure_ascii=False, indent=2)
-        self.wfile.write(response_json.encode('utf-8'))
+# Vercel 函数入口 - 这是关键！
+def handler(request):
+    print(f"\n🔥 Vercel 函数被调用")
+    print(f"📥 请求方法: {request.method}")
+    print(f"📥 请求路径: {request.url}")
     
-    def do_POST(self):
-        print(f"📥 POST 请求: {self.path}")
+    try:
+        # 设置响应头
+        headers = {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type'
+        }
         
-        try:
-            # 读取请求体
-            content_length = int(self.headers.get('Content-Length', 0))
-            post_data = self.rfile.read(content_length)
-            
-            # 解析JSON
-            if post_data:
-                request_data = json.loads(post_data.decode('utf-8'))
-            else:
-                request_data = {}
-            
+        if request.method == 'OPTIONS':
+            # 处理 CORS 预检请求
+            return {
+                'statusCode': 200,
+                'headers': headers,
+                'body': json.dumps({'message': 'CORS preflight'})
+            }
+        
+        elif request.method == 'GET':
+            # 健康检查
+            response_data = health_check()
+            return {
+                'statusCode': 200,
+                'headers': headers,
+                'body': json.dumps(response_data, ensure_ascii=False, indent=2)
+            }
+        
+        elif request.method == 'POST':
             # 处理分发请求
-            result = handle_distribute(request_data)
-            
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            
-            response_json = json.dumps(result, ensure_ascii=False, indent=2)
-            self.wfile.write(response_json.encode('utf-8'))
-            
-        except json.JSONDecodeError as e:
+            try:
+                # 获取请求体
+                if hasattr(request, 'json') and request.json:
+                    request_data = request.json
+                elif hasattr(request, 'body'):
+                    if request.body:
+                        request_data = json.loads(request.body)
+                    else:
+                        request_data = {}
+                else:
+                    request_data = {}
+                
+                result = handle_distribute(request_data)
+                
+                return {
+                    'statusCode': 200,
+                    'headers': headers,
+                    'body': json.dumps(result, ensure_ascii=False, indent=2)
+                }
+                
+            except json.JSONDecodeError as e:
+                error_response = {
+                    "ok": False,
+                    "error": "请求数据格式错误",
+                    "details": str(e)
+                }
+                return {
+                    'statusCode': 400,
+                    'headers': headers,
+                    'body': json.dumps(error_response, ensure_ascii=False, indent=2)
+                }
+                
+            except Exception as e:
+                error_response = {
+                    "ok": False,
+                    "error": str(e),
+                    "message": "处理失败，请检查配置和权限"
+                }
+                return {
+                    'statusCode': 500,
+                    'headers': headers,
+                    'body': json.dumps(error_response, ensure_ascii=False, indent=2)
+                }
+        
+        else:
+            # 不支持的方法
             error_response = {
                 "ok": False,
-                "error": "请求数据格式错误",
-                "details": str(e)
+                "error": f"不支持的HTTP方法: {request.method}",
+                "supported_methods": ["GET", "POST", "OPTIONS"]
             }
-            self.send_response(400)
-            self.send_header('Content-type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            
-            response_json = json.dumps(error_response, ensure_ascii=False, indent=2)
-            self.wfile.write(response_json.encode('utf-8'))
-            
-        except Exception as e:
-            error_response = {
-                "ok": False,
-                "error": str(e),
-                "message": "处理失败，请检查配置和权限"
+            return {
+                'statusCode': 405,
+                'headers': headers,
+                'body': json.dumps(error_response, ensure_ascii=False, indent=2)
             }
-            self.send_response(500)
-            self.send_header('Content-type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
             
-            response_json = json.dumps(error_response, ensure_ascii=False, indent=2)
-            self.wfile.write(response_json.encode('utf-8'))
-    
-    def do_OPTIONS(self):
-        # 处理 CORS 预检请求
-        self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        self.end_headers()
+    except Exception as e:
+        print(f"❌ 函数处理失败: {e}")
+        error_response = {
+            "ok": False,
+            "error": "服务器内部错误",
+            "details": str(e)
+        }
+        return {
+            'statusCode': 500,
+            'headers': {
+                'Content-Type': 'application/json; charset=utf-8',
+                'Access-Control-Allow-Origin': '*'
+            },
+            'body': json.dumps(error_response, ensure_ascii=False, indent=2)
+        }
